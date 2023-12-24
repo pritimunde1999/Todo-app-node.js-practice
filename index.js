@@ -8,7 +8,9 @@ const { cleanUpAndValidateLogin } = require('./utils/authLogin');
 const session = require('express-session');
 const { isAuth } = require('./middlewares/isAuth');
 const mongoDbSession = require('connect-mongodb-session')(session);
-const validator = require('validator')
+const validator = require('validator');
+const sessionModel = require('./models/sessionModel');
+const todoModel = require('./models/todoModel');
 
 
 
@@ -43,6 +45,8 @@ app.use(
        store : store
     })
 )
+
+app.use(express.static("public"));
 
 
 
@@ -194,7 +198,193 @@ app.post('/login',async (req,res)=>{
 })
 
 app.get('/dashboard',isAuth, (req,res)=>{
-    return res.send("dashboard page")
+    return res.render("dashboard")
+})
+
+app.post('/logout', isAuth , (req,res)=>{
+    req.session.destroy((err)=>{
+        if(err) throw err;
+
+        return res.redirect('/login')
+    })
+})
+
+app.post('/logout_from_all_devices', isAuth, async(req,res)=>{
+    console.log(req.session.user.username);
+    const username = req.session.user.username;
+
+    try{
+        const deleteSessionCount = await sessionModel.deleteMany({
+            "session.user.username" : username
+        })
+
+        console.log(deleteSessionCount)
+
+        res.redirect('/login')
+    }
+    catch(err){
+        return res.send("Logout unsuccessfull");
+    }
+})
+
+
+app.post('/create-item', isAuth, async(req,res)=>{
+    const todoText = req.body.todo;
+    const username = req.session.user.username;
+
+    if(!todoText)
+    {
+        return res.send({
+            status : 400,
+            message : 'Missing todo text!'
+        })
+    }
+
+    if(typeof todoText !== 'string')
+    {
+        return res.send({
+            status : 400,
+            message : 'Todo text is not a string'
+        })
+    }
+
+    if(todoText.length <3 || todoText.length>100)
+    {
+        res.send({
+            status : 400,
+            message : 'Todo text length should be 3 to 100 characters'
+        })
+    }
+
+    const todoObj = new todoModel({
+        todo: todoText,
+        username: username
+    })
+
+    try{
+
+        const todoDb = await todoObj.save();
+
+        return res.send({
+            status: 201,
+            message: "Todo created successfully",
+            data: todoDb,
+          });
+    }
+    catch(err){
+        return res.send({
+            status: 500,
+            message: "Database error",
+            error: err,
+          });
+    }
+
+})
+
+
+app.post('/edit-item', isAuth, async(req,res)=>{
+    
+    const { id, newData } = req.body;
+
+  //data validation
+
+  if (!id || !newData) {
+    return res.send({
+      status: 400,
+      message: "Missing credentials",
+    });
+  }
+
+  if (newData.length < 3 || newData.length > 50) {
+    return res.send({
+      status: 400,
+      message: "Todo length should be in range of 3-50 chars",
+    });
+  }
+
+  //find the todo from db
+
+  try {
+    const todoDb = await todoModel.findOne({ _id: id });
+    if (!todoDb) {
+      return res.send({
+        status: 400,
+        message: "Todo not found",
+      });
+    }
+
+    //check ownership
+    if (todoDb.username !== req.session.user.username) {
+      return res.send({
+        status: 401,
+        message: "Not allowed to edit, authorization failed",
+      });
+    }
+
+    //update the todo in DB
+    const todoPrev = await todoModel.findOneAndUpdate(
+      { _id: id },
+      { todo: newData }
+    );
+
+    return res.send({
+      status: 200,
+      message: "Todo updated successfully",
+      data: todoPrev,
+    });
+  } catch (error) {
+    return res.send({
+      status: 500,
+      message: "Database error",
+      error: error,
+    });
+  }
+})
+
+app.post('/delete-item', isAuth, async(req,res)=>{
+    const {id} = req.body;
+
+    if(!id){
+        return res.send({
+            status : 400,
+            message : 'Missing Credentials'
+        })
+    }
+
+    try{
+       const todoDb = await todoModel.findOne({_id : id});
+       if(!todoDb){
+        return res.send({
+            status : 404,
+            message : 'No Todo Found with given ID'
+        })
+       }
+
+        //check ownership 
+
+        if(todoDb.username !== req.session.user.username)
+        {
+            return res.send({
+                status : 404 ,
+                message : 'Cannot edit todo ... authorization failed!'
+            })
+        }
+
+        const todoPrev = await todoModel.findOneAndDelete({ _id: id });
+
+        return res.send({
+            status: 200,
+            message: "Todo deleted successfully",
+            data: todoPrev,
+        });
+    }
+    catch(err){
+        return res.send({
+            status: 500,
+            message: "Database error",
+            error: err,
+        });
+    }
 })
 
 app.listen(PORT,()=>{
